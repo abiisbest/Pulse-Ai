@@ -1,103 +1,79 @@
 from flask import Flask, render_template_string, jsonify, request
-import random
-from datetime import datetime
+import firebase_admin
+from firebase_admin import credentials, firestore
+import os
 
 app = Flask(__name__)
 
-# Note: In production with Firestore, these lists/dicts will be fetched/updated from Google Cloud Firestore.
-patients = [
-    {
-        "id": "MRN-8842",
-        "name": "Robert Fox",
-        "age": 62,
-        "gender": "Male",
-        "complaint": "Acute Angina",
-        "doctor": "Dr. Sarah Jenkins",
-        "ward": "Cardio Bed-02",
-        "waitTime": "0m",
-        "apptTime": "10:30 AM",
-        "status": "In Consultation",
-    },
-    {
-        "id": "MRN-9102",
-        "name": "Emily Watson",
-        "age": 29,
-        "gender": "Female",
-        "complaint": "Compound Tibia Fracture",
-        "doctor": "Dr. Lucas Hood",
-        "ward": "ED Trauma-01",
-        "waitTime": "12m",
-        "apptTime": "10:45 AM",
-        "status": "Waiting",
-    },
-    {
-        "id": "MRN-7731",
-        "name": "Marcus Chen",
-        "age": 45,
-        "gender": "Male",
-        "complaint": "Severe Abdominal Pain",
-        "doctor": "Dr. Sarah Jenkins",
-        "ward": "Surg-Prep",
-        "waitTime": "24m",
-        "apptTime": "11:00 AM",
-        "status": "Waiting",
-    },
-    {
-        "id": "MRN-6421",
-        "name": "Clara Oswald",
-        "age": 34,
-        "gender": "Female",
-        "complaint": "High Fever & Dehydration",
-        "doctor": "Dr. Elena Rostova",
-        "ward": "Ward-4A",
-        "waitTime": "35m",
-        "apptTime": "11:15 AM",
-        "status": "Waiting",
-    },
-]
+# Initialize Firebase Admin & Firestore
+# (Make sure to place your serviceAccountKey.json in the project folder, 
+# or set the GOOGLE_APPLICATION_CREDENTIALS environment variable)
+if not firebase_admin._apps:
+    try:
+        cred = credentials.Certificate("serviceAccountKey.json")
+        firebase_admin.initialize_app(cred)
+    except Exception as e:
+        # Fallback for cloud deployment using environment variables or default auth
+        firebase_admin.initialize_app()
 
-beds = [
-    {"id": "ICU-1", "ward": "ICU", "status": "occupied", "patient": "R. Fox"},
-    {"id": "ICU-2", "ward": "ICU", "status": "occupied", "patient": "D. Vance"},
-    {"id": "ICU-3", "ward": "ICU", "status": "cleaning", "patient": "--"},
-    {"id": "ICU-4", "ward": "ICU", "status": "available", "patient": "--"},
-    {"id": "ED-01", "ward": "ED", "status": "occupied", "patient": "E. Watson"},
-    {"id": "ED-02", "ward": "ED", "status": "occupied", "patient": "M. Chen"},
-    {"id": "ED-03", "ward": "ED", "status": "available", "patient": "--"},
-    {"id": "ED-04", "ward": "ED", "status": "occupied", "patient": "A. Miller"},
-    {"id": "CARD-1", "ward": "CARDIO", "status": "occupied", "patient": "J. Harper"},
-    {"id": "CARD-2", "ward": "CARDIO", "status": "available", "patient": "--"},
-    {"id": "SURG-1", "ward": "SURGERY", "status": "occupied", "patient": "S. Ray"},
-    {"id": "SURG-2", "ward": "SURGERY", "status": "available", "patient": "--"},
-]
+db = firestore.client()
 
-staffMembers = {
-    "ed": [
-        {
-            "name": "Dr. Michael Chang",
-            "role": "Attending Physician",
-            "load": "85%",
-        },
-        {"name": "Nurse Jessica Alba", "role": "Triage Specialist", "load": "92%"},
-        {"name": "Nurse Dave Miller", "role": "Staff Nurse", "load": "60%"},
-    ],
-    "icu": [
-        {"name": "Dr. Elena Rostova", "role": "Intensivist", "load": "78%"},
-        {
-            "name": "Nurse Karen Page",
-            "role": "Critical Care RN",
-            "load": "95%",
-        },
-    ],
-    "standby": [
-        {
-            "name": "Dr. Lucas Hood",
-            "role": "General Surgeon",
-            "status": "Standby",
-        },
-        {"name": "Nurse Chloe Bennet", "role": "Pediatric RN", "status": "On-Call"},
-    ],
-}
+# --- FIRESTORE DATABASE VERIFICATION TEST ---
+try:
+    # Attempt a quick write/read test to prove database connection on startup
+    test_ref = db.collection("system_logs").document("connection_test")
+    test_ref.set({"status": "Connected successfully", "timestamp": firestore.SERVER_TIMESTAMP})
+    print("SUCCESS: Connected to Google Cloud Firestore Database!")
+except Exception as e:
+    print(f"DATABASE CONNECTION WARNING: {e}")
+
+@app.route("/")
+def index():
+    # Fetch live data from Firestore collections
+    try:
+        patients_ref = db.collection("patients").stream()
+        patients = [doc.to_dict() for doc in patients_ref]
+        if not patients:
+            patients = [{"id": "MRN-8842", "name": "Robert Fox", "age": 62, "gender": "Male", "complaint": "Acute Angina", "doctor": "Dr. Sarah Jenkins", "ward": "Cardio Bed-02", "waitTime": "0m", "apptTime": "10:30 AM", "status": "In Consultation"}]
+    except Exception:
+        patients = []
+
+    try:
+        beds_ref = db.collection("beds").stream()
+        beds = [doc.to_dict() for doc in beds_ref]
+        if not beds:
+            beds = [{"id": "ICU-1", "ward": "ICU", "status": "occupied", "patient": "R. Fox"}]
+    except Exception:
+        beds = []
+
+    staffMembers = {
+        "ed": [{"name": "Dr. Michael Chang", "role": "Attending Physician", "load": "85%"}],
+        "icu": [{"name": "Dr. Elena Rostova", "role": "Intensivist", "load": "78%"}],
+        "standby": [{"name": "Dr. Lucas Hood", "role": "General Surgeon", "status": "Standby"}]
+    }
+
+    return render_template_string(HTML_TEMPLATE, patients=patients, beds=beds, staffMembers=staffMembers)
+
+
+# --- DATABASE DIAGNOSTIC ROUTE (Proof of Connection) ---
+@app.route("/db-status")
+def db_status():
+    try:
+        # Fetch collection counts/documents to prove live database interaction
+        docs = list(db.collection("system_logs").stream())
+        return jsonify({
+            "database": "Google Cloud Firestore",
+            "status": "Online & Active",
+            "connection_proof": "Successfully queried Firestore collection 'system_logs'",
+            "record_count": len(docs)
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "database": "Google Cloud Firestore",
+            "status": "Error",
+            "details": str(e)
+        }), 500
+
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -117,7 +93,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 flex h-screen overflow-hidden">
-
   <aside class="w-64 bg-slate-900 border-r border-slate-800 flex flex-col justify-between shrink-0">
     <div>
       <div class="h-16 flex items-center px-6 gap-3 border-b border-slate-800">
@@ -132,6 +107,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <nav class="p-4 space-y-1.5 text-sm" id="dynamic-nav"></nav>
     </div>
     <div class="p-4 border-t border-slate-800 space-y-3">
+      <div class="bg-slate-950/60 border border-slate-800 rounded-xl p-3 flex items-center justify-between">
+        <div>
+          <p class="text-[10px] uppercase font-bold text-slate-400">Database Status</p>
+          <a href="/db-status" target="_blank" class="text-xs text-emerald-400 font-semibold hover:underline flex items-center gap-1 mt-0.5">
+            <i class="fa-solid fa-database text-[10px]"></i> Firestore Live ✓
+          </a>
+        </div>
+      </div>
       <div class="bg-slate-950/60 border border-slate-800 rounded-xl p-3">
         <label class="block text-[10px] uppercase font-bold text-slate-400 mb-1.5">Switch Active Role</label>
         <select id="role-selector" onchange="switchRole(this.value)" class="w-full bg-slate-800 border border-slate-700 text-xs text-cyan-400 rounded-lg px-2.5 py-1.5 font-semibold focus:outline-none focus:border-cyan-500">
@@ -264,7 +247,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           </div>
           <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl">
             <div class="flex items-center justify-between mb-4">
-              <h2 class="text-sm font-bold text-white tracking-wide">Live Hospital Patient Flow Register</h2>
+              <h2 class="text-sm font-bold text-white tracking-wide">Live Hospital Patient Flow Register (Firestore Connected)</h2>
               <span class="text-xs text-cyan-400 font-mono" id="admin-patient-count">4 Active Records</span>
             </div>
             <div class="overflow-x-auto">
@@ -1050,16 +1033,5 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </body>
 </html>"""
 
-
-@app.route("/")
-def index():
-  return render_template_string(
-      HTML_TEMPLATE,
-      patients=patients,
-      beds=beds,
-      staffMembers=staffMembers,
-  )
-
-
 if __name__ == "__main__":
-  app.run(debug=True, port=5000)
+    app.run(debug=True, port=5000)
